@@ -1,9 +1,26 @@
+"""
+app.py — Interface Streamlit pour le système d'orientation scolaire.
+"""
+
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from io import BytesIO
+
+from utils import (
+    SUBJECT_PATTERNS,
+    TRACK_NAMES,
+    TRACK_COLORS,
+    DEFAULT_WEIGHTS,
+    read_excel_safe,
+    clean_dataframe,
+    detect_subject_columns,
+    build_student_name,
+    compute_averages,
+    classify_all,
+    style_filiere,
+)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CONFIGURATION
@@ -14,31 +31,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-SUBJECT_PATTERNS = {
-    "Mathématiques": [
-        "mathématiques", "mathematiques", "maths", "math", "mathe",
-    ],
-    "Physique": [
-        "physique", "phys", "chimie", "physique-chimie", "physique chimie",
-    ],
-    "SVT": [
-        "svt", "sciences de la vie", "science de la vie", "biologie",
-        "sciences de la vie et de la terre",
-    ],
-    "Français": [
-        "français", "francais", "franç", "langue française",
-        "langue francaise", "lf",
-    ],
-}
-
-TRACK_NAMES = {
-    "SM": "Sciences Mathématiques",
-    "SE": "Sciences Expérimentales",
-    "LT": "Lettres & Traduction",
-}
-
-TRACK_COLORS = {"SM": "#7c6cf0", "SE": "#22c997", "LT": "#f06292"}
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CSS
@@ -62,7 +54,6 @@ section[data-testid="stSidebar"] {
 
 .block-container { padding-top: 2rem; max-width: 1200px; }
 
-/* ── Cards ── */
 .metric-card {
     background: rgba(255,255,255,0.03);
     border: 1px solid rgba(255,255,255,0.07);
@@ -76,7 +67,6 @@ section[data-testid="stSidebar"] {
     box-shadow: 0 14px 44px rgba(0,0,0,.35);
 }
 
-/* ── Track label ── */
 .track-badge {
     display: inline-block;
     padding: 6px 18px;
@@ -86,96 +76,21 @@ section[data-testid="stSidebar"] {
     letter-spacing: .04em;
 }
 
-/* ── Upload zone ── */
 [data-testid="stFileUploadDropzone"] {
     border: 2px dashed rgba(255,255,255,0.12) !important;
     border-radius: 16px !important;
 }
 
-/* ── Tables ── */
 [data-testid="stDataFrame"] { border-radius: 14px; overflow: hidden; }
 
-/* ── Dividers ── */
 hr { border-color: rgba(255,255,255,0.06) !important; }
 
-/* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 6px; }
 </style>
 """,
     unsafe_allow_html=True,
 )
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  FONCTIONS UTILITAIRES
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-def detect_subject_columns(df: pd.DataFrame) -> dict[str, list[str]]:
-    """Regroupe les colonnes du DataFrame par matière grâce à des mots-clés."""
-    mapping: dict[str, list[str]] = {}
-    for col in df.columns:
-        low = col.lower().strip()
-        for subject, keywords in SUBJECT_PATTERNS.items():
-            if any(kw in low for kw in keywords):
-                mapping.setdefault(subject, []).append(col)
-                break
-    return mapping
-
-
-def detect_student_columns(df: pd.DataFrame):
-    """Retourne (col_nom, col_prenom, col_complet) — chacun peut être None."""
-    nom = prenom = complet = None
-    for col in df.columns:
-        low = col.lower().strip()
-        if any(k in low for k in ("nom et prénom", "nom et prenom", "nom_complet", "nom complet", "élève", "eleve")):
-            complet = col
-        elif any(k in low for k in ("prénom", "prenom", "first name")):
-            prenom = col
-        elif any(k in low for k in ("nom", "name", "last name", "famille")):
-            nom = col
-    return nom, prenom, complet
-
-
-def build_student_name(df: pd.DataFrame) -> pd.Series:
-    nom, prenom, complet = detect_student_columns(df)
-    if complet:
-        return df[complet].astype(str)
-    if nom and prenom:
-        return df[nom].astype(str) + " " + df[prenom].astype(str)
-    if nom:
-        return df[nom].astype(str)
-    return pd.Series([f"Élève {i+1}" for i in range(len(df))], index=df.index)
-
-
-def compute_averages(df: pd.DataFrame, subject_cols: dict[str, list[str]]) -> pd.DataFrame:
-    """Moyenne par matière pour chaque élève."""
-    avgs = pd.DataFrame(index=df.index)
-    for subject, cols in subject_cols.items():
-        for c in cols:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-        avgs[subject] = df[cols].mean(axis=1).round(2)
-    return avgs.fillna(0)
-
-
-def classify(row: pd.Series, weights: dict) -> tuple[str, dict, float]:
-    """Renvoie (filière, scores_dict, confiance)."""
-    scores = {}
-    for track, tw in weights.items():
-        scores[track] = round(sum(tw.get(s, 0) * row.get(s, 0) for s in row.index), 2)
-    best = max(scores, key=scores.get)
-    sorted_v = sorted(scores.values(), reverse=True)
-    confidence = round(sorted_v[0] - sorted_v[1], 2) if len(sorted_v) > 1 else 0.0
-    return best, scores, confidence
-
-
-def style_filiere(val: str) -> str:
-    m = {
-        "SM": "background:rgba(124,108,240,.18);color:#b8b0ff;font-weight:600",
-        "SE": "background:rgba(34,201,151,.15);color:#7aebc8;font-weight:600",
-        "LT": "background:rgba(240,98,146,.15);color:#ffb0c8;font-weight:600",
-    }
-    return m.get(val, "")
-
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  HEADER
@@ -208,8 +123,8 @@ with st.sidebar:
 
     uploaded_file = st.file_uploader(
         "📁 Importer le fichier Excel",
-        type=["xlsx", "xls"],
-        help="Colonnes attendues : Nom, Prénom, puis les notes par matière (2-4 devoirs).",
+        type=["xlsx", "xls", "csv"],
+        help="Colonnes : Nom, Prénom, puis notes par matière (2-4 devoirs).",
     )
 
     st.divider()
@@ -220,22 +135,22 @@ with st.sidebar:
         return st.slider(label, 0.0, 5.0, default, 0.5, key=key)
 
     st.markdown("**🟣 Sciences Mathématiques**")
-    sm_m = _w("Math", 3.0, "sm_m")
-    sm_p = _w("Physique", 2.5, "sm_p")
-    sm_s = _w("SVT", 1.0, "sm_s")
-    sm_f = _w("Français", 0.5, "sm_f")
+    sm_m = _w("Math",     3.0, "sm_m")
+    sm_p = _w("Physique",  2.5, "sm_p")
+    sm_s = _w("SVT",       1.0, "sm_s")
+    sm_f = _w("Français",  0.5, "sm_f")
 
     st.markdown("**🟢 Sciences Expérimentales**")
-    se_m = _w("Math", 1.5, "se_m")
-    se_p = _w("Physique", 2.0, "se_p")
-    se_s = _w("SVT", 3.0, "se_s")
-    se_f = _w("Français", 0.5, "se_f")
+    se_m = _w("Math",      1.5, "se_m")
+    se_p = _w("Physique",  2.0, "se_p")
+    se_s = _w("SVT",       3.0, "se_s")
+    se_f = _w("Français",  0.5, "se_f")
 
     st.markdown("**🔴 Lettres & Traduction**")
-    lt_m = _w("Math", 0.5, "lt_m")
-    lt_p = _w("Physique", 0.5, "lt_p")
-    lt_s = _w("SVT", 0.5, "lt_s")
-    lt_f = _w("Français", 3.5, "lt_f")
+    lt_m = _w("Math",      0.5, "lt_m")
+    lt_p = _w("Physique",  0.5, "lt_p")
+    lt_s = _w("SVT",       0.5, "lt_s")
+    lt_f = _w("Français",  3.5, "lt_f")
 
     WEIGHTS = {
         "SM": {"Mathématiques": sm_m, "Physique": sm_p, "SVT": sm_s, "Français": sm_f},
@@ -247,19 +162,19 @@ with st.sidebar:
     with st.expander("ℹ️ Aide — format du fichier"):
         st.markdown(
             """
-- **Colonnes** : `Nom`, `Prénom`, puis notes (ex. `Physique_DS1`, `Math_DS2`…)
+- **Colonnes** : `Nom`, `Prénom`, puis notes
+  (ex. `Physique_DS1`, `Math_DS2`…)
 - Chaque matière : **2 à 4** devoirs
 - Notes **numériques** (de préférence sur 20)
 - Les noms de colonnes sont détectés **automatiquement**
+- Formats acceptés : `.xlsx`, `.xls`, `.csv`
 """
         )
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  CONTENU PRINCIPAL
+#  ÉCRAN D'ACCUEIL (pas de fichier)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 if uploaded_file is None:
-    # ── Écran d'accueil ───────────────────────────────────────────
     st.markdown(
         """
 <div style="text-align:center;padding:3.5rem 1rem">
@@ -296,51 +211,43 @@ if uploaded_file is None:
     )
     st.stop()
 
-# ── Traitement du fichier ─────────────────────────────────────────
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  TRAITEMENT DU FICHIER
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 try:
-    df_raw = pd.read_excel(uploaded_file)
+    df_raw = read_excel_safe(uploaded_file)
 except Exception as exc:
-    st.error(f"Impossible de lire le fichier : {exc}")
+    st.error(f"Impossible de lire le fichier :\n\n{exc}")
     st.stop()
 
-# Détection
+df_raw = clean_dataframe(df_raw)
+
+# Détection des matières
 subject_cols = detect_subject_columns(df_raw)
 if not subject_cols:
     st.error(
         "Aucune matière reconnue. Vérifiez que vos colonnes contiennent "
         "les mots-clés : **math**, **physique**, **svt**, **français**."
     )
-    st.code(", ".join(df_raw.columns))
+    st.code(", ".join(str(c) for c in df_raw.columns))
     st.stop()
 
-df_raw["__Élève__"] = build_student_name(df_raw)
+# Construction des noms + moyennes + classification
+student_names = build_student_name(df_raw)
 averages = compute_averages(df_raw.copy(), subject_cols)
+results = classify_all(df_raw, averages, WEIGHTS, student_names)
 
-# Classification
-rows = []
-for idx in range(len(df_raw)):
-    avgs = averages.iloc[idx]
-    filiere, scores, conf = classify(avgs, WEIGHTS)
-    row = {
-        "Élève": df_raw["__Élève__"].iloc[idx],
-        "Filière": filiere,
-        "Score SM": scores["SM"],
-        "Score SE": scores["SE"],
-        "Score LT": scores["LT"],
-        "Confiance": conf,
-    }
-    for subj in subject_cols:
-        row[f"Moy. {subj}"] = avgs.get(subj, 0)
-    rows.append(row)
-
-results = pd.DataFrame(rows)
-
-# ── Détection summary ─────────────────────────────────────────────
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  DÉTECTION SUMMARY
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 st.markdown("### 📋 Détection automatique")
 c1, c2 = st.columns(2)
 with c1:
     for subj, cols in subject_cols.items():
-        st.markdown(f"- **{subj}** — {len(cols)} devoir(s) → `{', '.join(cols)}`")
+        st.markdown(
+            f"- **{subj}** — {len(cols)} devoir(s) → "
+            f"`{'`, `'.join(cols)}`"
+        )
 with c2:
     st.markdown(f"- **Élèves détectés :** {len(df_raw)}")
     st.markdown(f"- **Matières détectées :** {len(subject_cols)}")
@@ -358,14 +265,14 @@ n_lt = int((results["Filière"] == "LT").sum())
 total = len(results)
 
 cards = [
-    ("SM", n_sm, "#7c6cf0", TRACK_NAMES["SM"]),
-    ("SE", n_se, "#22c997", TRACK_NAMES["SE"]),
-    ("LT", n_lt, "#f06292", TRACK_NAMES["LT"]),
-    ("Total", total, "#f0c27f", "Élèves analysés"),
+    ("SM",    n_sm,   "#7c6cf0", TRACK_NAMES["SM"]),
+    ("SE",    n_se,   "#22c997", TRACK_NAMES["SE"]),
+    ("LT",    n_lt,   "#f06292", TRACK_NAMES["LT"]),
+    ("Total", total,  "#f0c27f", "Élèves analysés"),
 ]
 
 cols_cards = st.columns(4)
-for col, (label, count, color, subtitle) in zip(cols_cards, cards):
+for col, (_, count, color, subtitle) in zip(cols_cards, cards):
     pct = f"{count / total * 100:.1f} %" if total else "—"
     with col:
         st.markdown(
@@ -413,8 +320,11 @@ with g1:
 with g2:
     st.markdown("#### Moyennes par matière & filière")
     moy_cols = [c for c in results.columns if c.startswith("Moy.")]
-    melted = results.groupby("Filière")[moy_cols].mean().reset_index().melt(
-        id_vars="Filière", var_name="Matière", value_name="Moyenne"
+    melted = (
+        results.groupby("Filière")[moy_cols]
+        .mean()
+        .reset_index()
+        .melt(id_vars="Filière", var_name="Matière", value_name="Moyenne")
     )
     melted["Matière"] = melted["Matière"].str.replace("Moy. ", "")
     fig_bar = px.bar(
@@ -432,8 +342,15 @@ with g2:
         height=360,
         margin=dict(t=20, b=20, l=20, r=20),
         legend=dict(font=dict(color="rgba(255,255,255,.8)")),
-        xaxis=dict(gridcolor="rgba(255,255,255,.08)", tickfont=dict(color="rgba(255,255,255,.8)")),
-        yaxis=dict(gridcolor="rgba(255,255,255,.08)", tickfont=dict(color="rgba(255,255,255,.8)"), range=[0, 20]),
+        xaxis=dict(
+            gridcolor="rgba(255,255,255,.08)",
+            tickfont=dict(color="rgba(255,255,255,.8)"),
+        ),
+        yaxis=dict(
+            gridcolor="rgba(255,255,255,.08)",
+            tickfont=dict(color="rgba(255,255,255,.8)"),
+            range=[0, 20],
+        ),
     )
     st.plotly_chart(fig_bar, use_container_width=True)
 
@@ -444,11 +361,23 @@ st.divider()
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 st.markdown("### 📝 Résultats détaillés")
 
-filtre = st.multiselect("Filtrer par filière", ["SM", "SE", "LT"], default=["SM", "SE", "LT"])
+filtre = st.multiselect(
+    "Filtrer par filière",
+    ["SM", "SE", "LT"],
+    default=["SM", "SE", "LT"],
+)
 filtered = results[results["Filière"].isin(filtre)].copy()
 
-fmt = {c: "{:.2f}" for c in filtered.columns if c.startswith("Score") or c.startswith("Moy.") or c == "Confiance"}
-styled = filtered.style.map(style_filiere, subset=["Filière"]).format(fmt)
+fmt = {
+    c: "{:.2f}"
+    for c in filtered.columns
+    if c.startswith("Score") or c.startswith("Moy.") or c == "Confiance"
+}
+styled = (
+    filtered.style
+    .map(style_filiere, subset=["Filière"])
+    .format(fmt)
+)
 st.dataframe(styled, use_container_width=True, height=420)
 
 st.divider()
@@ -467,6 +396,7 @@ if selected:
 
     d1, d2 = st.columns([1, 1])
 
+    # ── Colonne gauche : identité + scores barres ──
     with d1:
         st.markdown(
             f"""
@@ -506,6 +436,7 @@ if selected:
                 unsafe_allow_html=True,
             )
 
+    # ── Colonne droite : radar ──
     with d2:
         idx_student = results[results["Élève"] == selected].index[0]
         stu_avgs = averages.iloc[idx_student]
@@ -525,8 +456,16 @@ if selected:
         )
         fig_radar.update_layout(
             polar=dict(
-                radialaxis=dict(visible=True, range=[0, 20], gridcolor="rgba(255,255,255,.1)", tickfont=dict(color="rgba(255,255,255,.5)")),
-                angularaxis=dict(gridcolor="rgba(255,255,255,.1)", tickfont=dict(color="rgba(255,255,255,.8)", size=13)),
+                radialaxis=dict(
+                    visible=True,
+                    range=[0, 20],
+                    gridcolor="rgba(255,255,255,.1)",
+                    tickfont=dict(color="rgba(255,255,255,.5)"),
+                ),
+                angularaxis=dict(
+                    gridcolor="rgba(255,255,255,.1)",
+                    tickfont=dict(color="rgba(255,255,255,.8)", size=13),
+                ),
                 bgcolor="rgba(0,0,0,0)",
             ),
             paper_bgcolor="rgba(0,0,0,0)",
@@ -544,6 +483,7 @@ st.divider()
 st.markdown("### 💾 Exporter")
 
 ex1, ex2 = st.columns(2)
+
 with ex1:
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as wr:
@@ -563,5 +503,5 @@ with ex2:
         file_name="resultats_orientation.csv",
         mime="text/csv",
         use_container_width=True,
-)
-  
+    )
+    
