@@ -31,6 +31,16 @@ DEFAULT_WEIGHTS = {
 DEFAULT_THRESHOLDS = {"SM": 70, "SE": 50, "LT": 30}
 
 
+# ── Traduction des noms de matière en arabe (exports MASSAR) ──
+ARABIC_SUBJECT_MAP = {
+    "الرياضيات": "Mathematiques",
+    "الفيزياء والكيمياء": "Physique",
+    "علوم الحياة والأرض": "SVT",
+    "اللغة الفرنسية": "Francais",
+    "الفرنسية": "Francais",
+}
+
+
 def get_css():
     return """
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -117,6 +127,9 @@ hr { border-color: rgba(255, 255, 255, 0.06) !important; }
 
 
 def read_excel_safe(uploaded_file):
+    """
+    Lecture standard : xlsx, xls, csv (pour les anciens formats tabulaires).
+    """
     errors = []
     for engine in ("openpyxl", "xlrd", "calamine"):
         try:
@@ -144,6 +157,143 @@ def read_excel_safe(uploaded_file):
     raise RuntimeError("Lecture impossible.\n" + "\n".join(errors))
 
 
+# ── Fonctions de parsing pour les exports MASSAR ──
+
+def _find_header_row(df_raw, start_row=0, max_search=20):
+    """
+    Cherche la ligne contenant 'ID' et 'إسم التلميذ'.
+    Retourne l'index (0‑based) de la ligne d'en‑tête, ou None.
+    """
+    for i in range(start_row, min(start_row + max_search, len(df_raw))):
+        row_values = df_raw.iloc[i].astype(str).str.strip().tolist()
+        if any("ID" == val for val in row_values) and \
+           any("إسم التلميذ" in val for val in row_values):
+            return i
+    return None
+
+
+def _extract_subject_name(df_raw, header_row):
+    """
+    Remonte avant header_row pour trouver 'المادة' et retourne la clé matière (ex: 'Physique').
+    """
+    for i in range(max(0, header_row - 10), header_row):
+        row_text = " ".join(df_raw.iloc[i].astype(str).dropna().tolist())
+        if "المادة" in row_text:
+            parts = row_text.split("المادة")
+            if len(parts) > 1:
+                name_arabic = parts[1].split(":")[-1].strip()
+                for key, val in ARABIC_SUBJECT_MAP.items():
+                    if key in name_arabic:
+                        return val
+    return None
+
+
+def _parse_massar_sheet(df_raw, sheet_name):
+    """
+    Parse une feuille brute (header=None) d’un export MASSAR.
+    Retourne un DataFrame avec colonnes 'رقم التلميذ', 'إسم التلميذ' et les notes renommées.
+    Exclut les activités.
+    """
+    header_row = _find_header_row(df_raw)
+    if header_row is None:
+        return None
+
+    subject_key = _extract_subject_name(df_raw, header_row)
+    if subject_key is None:
+        st.warning(f"Matière non détectée dans '{sheet_name}', feuille ignorée.")
+        return None
+
+    sub_header_row = header_row + 1
+    main_header = df_raw.iloc[header_row].astype(str).tolist()
+    sub_header = df_raw.iloc[sub_header_row].astype(str).tolist() if sub_header_row < len(df_raw) else []
+
+    id_col = None
+    name_col = None
+    exam_cols = []  # liste de tuples (index, nom_du_devoir)
+
+    for idx, val in enumerate(main_header):
+        val = val.strip()
+        if val == "ID":
+            continue
+        elif val == "رقم التلميذ":
+            id_col = idx
+        elif val == "إسم التلميذ":
+            name_col = idx
+        elif val.startswith("الفرض"):
+            # On ne garde que les colonnes dont le sous‑en‑tête est 'النقطة'
+            if idx < len(sub_header) and 'النقطة' in sub_header[idx]:
+                exam_cols.append((idx, val))
+
+    if id_col is None or name_col is None or len(exam_cols) == 0:
+        st.warning(f"Colonnes obligatoires manquantes dans '{sheet_name}'.")
+        return None
+
+    # Lignes de données après sub_header_row
+    data_df = df_raw.iloc[sub_header_row + 1:].reset_index(drop=True)
+    data_df = data_df.rename(columns={
+        id_col: "رقم التلميذ_",
+        name_col: "إسم التلميذ_"
+    })
+    keep_cols = ["رقم التلميذ_", "إسم التلميذ_"] + [idx for idx, _ in exam_cols]
+    data_df = data_df[keep_cols].copy()
+
+    # Renommer les colonnes de devoirs en Matiere_DS1, Matiere_DS2, ...
+    for i, (col_idx, exam_name) in enumerate(exam_cols):
+        new_name = f"{subject_key}_DS{i+1}"
+        data_df = data_df.rename(columns={col_idx: new_name})
+
+    data_df = data_df.rename(columns={
+        "رقم التلميذ_": "رقم التلميذ",
+        "إسم التلميذ_": "إسم التلميذ"
+    })
+
+    # Conversion des notes en numérique
+    for i in range(len(exam_cols)):
+        col = f"{subject_key}_DS{i+1}"
+        data_df[col] = pd.to_numeric(data_df[col], errors='coerce')
+
+    data_df = data_df.dropna(subset=["رقم التلميذ"])
+    return data_df
+
+
+def combine_massar_workbook(uploaded_file):
+    """
+    Combine toutes les feuilles d'un export MASSAR en un seul DataFrame plat.
+    Retourne None si le fichier ne correspond pas au format MASSAR.
+    """
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+    except Exception:
+        return None
+
+    all_dfs = []
+    for sheet in xls.sheet_names:
+        df_raw = xls.parse(sheet, header=None)
+        parsed = _parse_massar_sheet(df_raw, sheet)
+        if parsed is not None:
+            all_dfs.append(parsed)
+
+    if not all_dfs:
+        return None
+
+    merged = all_dfs[0]
+    for df in all_dfs[1:]:
+        merged = merged.merge(df, on=["رقم التلميذ", "إسم التلميذ"], how="outer")
+    return merged
+
+
+def read_any_excel(uploaded_file):
+    """
+    Point d’entrée universel : tente d'abord le parsing MASSAR,
+    sinon utilise la lecture standard (anciens formats).
+    """
+    massar_df = combine_massar_workbook(uploaded_file)
+    if massar_df is not None and len(massar_df) > 0:
+        return massar_df
+    # Sinon, on retombe sur la lecture classique
+    return read_excel_safe(uploaded_file)
+
+
 def clean_dataframe(df):
     df = df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed")]
     df = df.dropna(how="all")
@@ -167,7 +317,8 @@ def detect_student_columns(df):
     complet = None
     for col in df.columns:
         low = col.lower().strip()
-        if any(k in low for k in ["nom et prenom", "nom_complet", "nom complet", "eleve"]):
+        # Ajout de "إسم التلميذ" pour les exports MASSAR
+        if any(k in low for k in ["nom et prenom", "nom_complet", "nom complet", "eleve", "إسم التلميذ"]):
             complet = col
         elif any(k in low for k in ["prenom", "first name"]):
             prenom = col
@@ -197,11 +348,6 @@ def compute_averages(df, subject_cols):
 
 
 def compute_student_score(averages, weights):
-    """
-    Calcule UN SEUL score /100 par élève.
-    Formule : Score = (somme(poids_i * moy_i) / somme(poids)) * 5
-    Le facteur 5 convertit une note /20 en score /100.
-    """
     total_weight = sum(weights.get(s, 0) for s in averages.columns)
     if total_weight == 0:
         return pd.Series(0.0, index=averages.index)
@@ -213,11 +359,6 @@ def compute_student_score(averages, weights):
 
 
 def classify_all(student_names, averages, scores, thresholds):
-    """
-    scores    : pd.Series — score unique /100 par élève
-    thresholds: dict {"SM": val, "SE": val, "LT": val}
-    Filière principale = seuil le plus élevé atteint (SM > SE > LT).
-    """
     rows = []
     for idx in range(len(averages)):
         score = scores.iloc[idx]
@@ -312,9 +453,6 @@ def html_student_card(name, score, primary, pname, pcol):
 
 
 def html_score_row(track, name, score, threshold, color, eligible):
-    """
-    Affiche le score unique de l'élève vs le seuil de chaque filière.
-    """
     cls = "eligible" if eligible else "not-eligible"
     icon = "✅" if eligible else "❌"
     pct = min(score, 100)
