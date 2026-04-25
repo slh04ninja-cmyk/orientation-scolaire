@@ -10,7 +10,7 @@ from utils import (
     TRACK_COLORS,
     DEFAULT_WEIGHTS,
     DEFAULT_THRESHOLDS,
-    read_excel_safe,
+    read_any_excel,          # ← nouvelle fonction de lecture
     clean_dataframe,
     detect_subject_columns,
     build_student_name,
@@ -144,13 +144,17 @@ if uploaded_file is None:
 
 
 # ─────────────────────────────────────────────
-# LECTURE & TRAITEMENT
+# LECTURE & TRAITEMENT (gère les deux formats)
 # ─────────────────────────────────────────────
 try:
-    df_raw = read_excel_safe(uploaded_file)
+    df_raw = read_any_excel(uploaded_file)   # ← nouvelle fonction universelle
 except Exception as exc:
     st.error("Impossible de lire le fichier : " + str(exc))
     st.stop()
+
+# Supprimer la colonne 'رقم التلميذ' si elle existe (export MASSAR)
+if 'رقم التلميذ' in df_raw.columns:
+    df_raw = df_raw.drop(columns=['رقم التلميذ'])
 
 df_raw = clean_dataframe(df_raw)
 
