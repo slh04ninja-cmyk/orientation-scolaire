@@ -9,17 +9,19 @@ import plotly.graph_objects as go
 from io import BytesIO
 
 from utils import (
-    SUBJECT_PATTERNS,
+    TRACK_ORDER,
     TRACK_NAMES,
     TRACK_COLORS,
-    DEFAULT_WEIGHTS,
+    DEFAULT_TRACK_WEIGHTS,
+    DEFAULT_THRESHOLDS,
     read_excel_safe,
     clean_dataframe,
     detect_subject_columns,
     build_student_name,
     compute_averages,
+    compute_all_scores,
     classify_all,
-    style_filiere,
+    style_primary,
 )
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -42,10 +44,7 @@ st.markdown(
 
 html, body, [class*="css"] { font-family: 'Outfit', sans-serif; }
 
-.stApp {
-    background: #0e0e1a;
-    color: #e0e0e0;
-}
+.stApp { background: #0e0e1a; color: #e0e0e0; }
 
 section[data-testid="stSidebar"] {
     background: linear-gradient(180deg, #0b0b18 0%, #151530 100%);
@@ -69,11 +68,11 @@ section[data-testid="stSidebar"] {
 
 .track-badge {
     display: inline-block;
-    padding: 6px 18px;
+    padding: 5px 14px;
     border-radius: 30px;
     font-weight: 600;
-    font-size: .85rem;
-    letter-spacing: .04em;
+    font-size: .8rem;
+    margin: 2px;
 }
 
 [data-testid="stFileUploadDropzone"] {
@@ -104,10 +103,11 @@ st.markdown(
       background-clip:text;">
     Système d'Orientation Scolaire
   </h1>
-  <p style="color:rgba(255,255,255,.55);font-size:1.05rem;max-width:640px;margin:auto">
-    Classification automatique <b style="color:#7c6cf0">SM</b> ·
+  <p style="color:rgba(255,255,255,.55);font-size:1.05rem;max-width:700px;margin:auto">
+    Score par filière → Seuils →
+    <b style="color:#7c6cf0">SM</b> ·
     <b style="color:#22c997">SE</b> ·
-    <b style="color:#f06292">LT</b> à partir des notes Excel
+    <b style="color:#f06292">LT</b>
   </p>
 </div>
 """,
@@ -127,381 +127,110 @@ with st.sidebar:
         help="Colonnes : Nom, Prénom, puis notes par matière (2-4 devoirs).",
     )
 
+    # ── Pondérations PAR FILIÈRE ──────────────────────────────────
     st.divider()
-    st.markdown("#### ⚖️ Pondérations")
-    st.caption("Ajustez le poids de chaque matière pour chaque filière.")
+    st.markdown("#### ⚖️ Poids des matières par filière")
+    st.caption("Chaque filière favorise ses propres matières dans son score.")
 
     def _w(label: str, default: float, key: str) -> float:
         return st.slider(label, 0.0, 5.0, default, 0.5, key=key)
 
+    # ── SM ──
     st.markdown("**🟣 Sciences Mathématiques**")
-    sm_m = _w("Math",     3.0, "sm_m")
-    sm_p = _w("Physique",  2.5, "sm_p")
-    sm_s = _w("SVT",       1.0, "sm_s")
-    sm_f = _w("Français",  0.5, "sm_f")
+    st.caption("Favorise fortement les Mathématiques")
+    sm_m = _w("Mathématiques", 5.0, "sm_m")
+    sm_p = _w("Physique",      3.0, "sm_p")
+    sm_s = _w("SVT",           1.0, "sm_s")
+    sm_f = _w("Français",      1.0, "sm_f")
 
+    # ── SE ──
     st.markdown("**🟢 Sciences Expérimentales**")
-    se_m = _w("Math",      1.5, "se_m")
-    se_p = _w("Physique",  2.0, "se_p")
-    se_s = _w("SVT",       3.0, "se_s")
-    se_f = _w("Français",  0.5, "se_f")
+    st.caption("Favorise la SVT et la Physique")
+    se_m = _w("Mathématiques", 2.0, "se_m")
+    se_p = _w("Physique",      3.0, "se_p")
+    se_s = _w("SVT",           4.0, "se_s")
+    se_f = _w("Français",      1.0, "se_f")
 
+    # ── LT ──
     st.markdown("**🔴 Lettres & Traduction**")
-    lt_m = _w("Math",      0.5, "lt_m")
-    lt_p = _w("Physique",  0.5, "lt_p")
-    lt_s = _w("SVT",       0.5, "lt_s")
-    lt_f = _w("Français",  3.5, "lt_f")
+    st.caption("Favorise fortement le Français")
+    lt_m = _w("Mathématiques", 1.0, "lt_m")
+    lt_p = _w("Physique",      1.0, "lt_p")
+    lt_s = _w("SVT",           1.0, "lt_s")
+    lt_f = _w("Français",      5.0, "lt_f")
 
-    WEIGHTS = {
+    TRACK_WEIGHTS = {
         "SM": {"Mathématiques": sm_m, "Physique": sm_p, "SVT": sm_s, "Français": sm_f},
         "SE": {"Mathématiques": se_m, "Physique": se_p, "SVT": se_s, "Français": se_f},
         "LT": {"Mathématiques": lt_m, "Physique": lt_p, "SVT": lt_s, "Français": lt_f},
     }
 
-    st.divider()
-    with st.expander("ℹ️ Aide — format du fichier"):
-        st.markdown(
-            """
-- **Colonnes** : `Nom`, `Prénom`, puis notes
-  (ex. `Physique_DS1`, `Math_DS2`…)
-- Chaque matière : **2 à 4** devoirs
-- Notes **numériques** (de préférence sur 20)
-- Les noms de colonnes sont détectés **automatiquement**
-- Formats acceptés : `.xlsx`, `.xls`, `.csv`
-"""
-        )
+    # ── Résumé visuel des poids ──
+    with st.expander("📊 Résumé des poids"):
+        weights_df = pd.DataFrame(TRACK_WEIGHTS).T
+        weights_df.index.name = "Filière"
+        st.dataframe(weights_df, use_container_width=True)
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  ÉCRAN D'ACCUEIL (pas de fichier)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-if uploaded_file is None:
+    # ── Seuils ──
+    st.divider()
+    st.markdown("#### 🎯 Seuils d'éligibilité")
+    st.caption(
+        "Score minimum PAR FILIÈRE pour y accéder. "
+        "Un élève peut être éligible à plusieurs filières."
+    )
+
+    seuil_sm = st.slider("Seuil SM", 0, 100, DEFAULT_THRESHOLDS["SM"], 1, key="s_sm")
+    seuil_se = st.slider("Seuil SE", 0, 100, DEFAULT_THRESHOLDS["SE"], 1, key="s_se")
+    seuil_lt = st.slider("Seuil LT", 0, 100, DEFAULT_THRESHOLDS["LT"], 1, key="s_lt")
+
+    THRESHOLDS = {"SM": seuil_sm, "SE": seuil_se, "LT": seuil_lt}
+
+    if not (seuil_sm >= seuil_se >= seuil_lt):
+        st.warning("⚠️ Les seuils doivent être SM ≥ SE ≥ LT")
+
+    # ── Échelle visuelle ──
     st.markdown(
-        """
-<div style="text-align:center;padding:3.5rem 1rem">
-  <div style="font-size:4rem;margin-bottom:.8rem">📂</div>
-  <h2 style="color:rgba(255,255,255,.75);font-weight:400">
-    Importez un fichier Excel pour démarrer
-  </h2>
+        f"""
+<div style="margin-top:.8rem;padding:.8rem 1rem;
+     background:rgba(255,255,255,.03);border-radius:12px;
+     border:1px solid rgba(255,255,255,.06);font-size:.85rem">
+  <div style="color:rgba(255,255,255,.5);margin-bottom:.5rem">
+    Échelle des seuils
+  </div>
+  <div style="position:relative;height:30px;margin:8px 0">
+    <div style="position:absolute;top:12px;left:0;right:0;height:6px;
+         background:linear-gradient(90deg,#f06292,#22c997,#7c6cf0);
+         border-radius:6px"></div>
+    <div style="position:absolute;top:6px;left:{seuil_lt}%;
+         width:18px;height:18px;border-radius:50%;
+         background:#f06292;border:2px solid #0e0e1a;
+         transform:translateX(-50%)"></div>
+    <div style="position:absolute;top:6px;left:{seuil_se}%;
+         width:18px;height:18px;border-radius:50%;
+         background:#22c997;border:2px solid #0e0e1a;
+         transform:translateX(-50%)"></div>
+    <div style="position:absolute;top:6px;left:{seuil_sm}%;
+         width:18px;height:18px;border-radius:50%;
+         background:#7c6cf0;border:2px solid #0e0e1a;
+         transform:translateX(-50%)"></div>
+  </div>
+  <div style="display:flex;justify-content:space-between;
+       color:rgba(255,255,255,.4);font-size:.75rem">
+    <span>0</span>
+    <span style="color:#f06292">LT ≥{seuil_lt}</span>
+    <span style="color:#22c997">SE ≥{seuil_se}</span>
+    <span style="color:#7c6cf0">SM ≥{seuil_sm}</span>
+    <span>100</span>
+  </div>
 </div>
 """,
         unsafe_allow_html=True,
     )
 
-    st.markdown("### 📄 Exemple de format attendu")
-    st.dataframe(
-        pd.DataFrame(
-            {
-                "Nom": ["Dupont", "Martin", "Bernard"],
-                "Prénom": ["Marie", "Ahmed", "Sophie"],
-                "Physique_DS1": [14, 12, 8],
-                "Physique_DS2": [15, 11, 9],
-                "Physique_DS3": [13, 13, 7],
-                "Math_DS1": [16, 10, 12],
-                "Math_DS2": [17, 11, 11],
-                "Math_DS3": [15, 9, 10],
-                "SVT_DS1": [10, 15, 13],
-                "SVT_DS2": [11, 16, 14],
-                "SVT_DS3": [9, 14, 12],
-                "Français_DS1": [12, 11, 16],
-                "Français_DS2": [11, 10, 17],
-                "Français_DS3": [13, 12, 18],
-            }
-        ),
-        use_container_width=True,
-    )
-    st.stop()
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  TRAITEMENT DU FICHIER
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-try:
-    df_raw = read_excel_safe(uploaded_file)
-except Exception as exc:
-    st.error(f"Impossible de lire le fichier :\n\n{exc}")
-    st.stop()
-
-df_raw = clean_dataframe(df_raw)
-
-# Détection des matières
-subject_cols = detect_subject_columns(df_raw)
-if not subject_cols:
-    st.error(
-        "Aucune matière reconnue. Vérifiez que vos colonnes contiennent "
-        "les mots-clés : **math**, **physique**, **svt**, **français**."
-    )
-    st.code(", ".join(str(c) for c in df_raw.columns))
-    st.stop()
-
-# Construction des noms + moyennes + classification
-student_names = build_student_name(df_raw)
-averages = compute_averages(df_raw.copy(), subject_cols)
-results = classify_all(df_raw, averages, WEIGHTS, student_names)
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  DÉTECTION SUMMARY
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-st.markdown("### 📋 Détection automatique")
-c1, c2 = st.columns(2)
-with c1:
-    for subj, cols in subject_cols.items():
+    # ── Aide ──
+    st.divider()
+    with st.expander("ℹ️ Comment ça marche"):
         st.markdown(
-            f"- **{subj}** — {len(cols)} devoir(s) → "
-            f"`{'`, `'.join(cols)}`"
-        )
-with c2:
-    st.markdown(f"- **Élèves détectés :** {len(df_raw)}")
-    st.markdown(f"- **Matières détectées :** {len(subject_cols)}")
+            """
+**1. Score PAR FILIÈRE** (chaque filière a ses propres poids) :
 
-st.divider()
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  STATISTIQUES
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-st.markdown("### 📊 Statistiques de classification")
-
-n_sm = int((results["Filière"] == "SM").sum())
-n_se = int((results["Filière"] == "SE").sum())
-n_lt = int((results["Filière"] == "LT").sum())
-total = len(results)
-
-cards = [
-    ("SM",    n_sm,   "#7c6cf0", TRACK_NAMES["SM"]),
-    ("SE",    n_se,   "#22c997", TRACK_NAMES["SE"]),
-    ("LT",    n_lt,   "#f06292", TRACK_NAMES["LT"]),
-    ("Total", total,  "#f0c27f", "Élèves analysés"),
-]
-
-cols_cards = st.columns(4)
-for col, (_, count, color, subtitle) in zip(cols_cards, cards):
-    pct = f"{count / total * 100:.1f} %" if total else "—"
-    with col:
-        st.markdown(
-            f"""
-<div class="metric-card" style="border-left:4px solid {color}">
-  <div style="color:{color};font-size:2rem;font-weight:700">{count}</div>
-  <div style="color:rgba(255,255,255,.7);font-size:.9rem">{subtitle}</div>
-  <div style="color:rgba(255,255,255,.35);font-size:.8rem">{pct}</div>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  GRAPHIQUES
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-g1, g2 = st.columns(2)
-
-with g1:
-    st.markdown("#### Répartition par filière")
-    fig_pie = px.pie(
-        values=[n_sm, n_se, n_lt],
-        names=["SM", "SE", "LT"],
-        color=["SM", "SE", "LT"],
-        color_discrete_map=TRACK_COLORS,
-        hole=0.48,
-    )
-    fig_pie.update_traces(
-        textfont_size=14,
-        textfont_color="white",
-        marker=dict(line=dict(color="#0e0e1a", width=2)),
-    )
-    fig_pie.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="white", family="Outfit"),
-        height=360,
-        margin=dict(t=20, b=20, l=20, r=20),
-        legend=dict(font=dict(color="rgba(255,255,255,.8)")),
-    )
-    st.plotly_chart(fig_pie, use_container_width=True)
-
-with g2:
-    st.markdown("#### Moyennes par matière & filière")
-    moy_cols = [c for c in results.columns if c.startswith("Moy.")]
-    melted = (
-        results.groupby("Filière")[moy_cols]
-        .mean()
-        .reset_index()
-        .melt(id_vars="Filière", var_name="Matière", value_name="Moyenne")
-    )
-    melted["Matière"] = melted["Matière"].str.replace("Moy. ", "")
-    fig_bar = px.bar(
-        melted,
-        x="Matière",
-        y="Moyenne",
-        color="Filière",
-        barmode="group",
-        color_discrete_map=TRACK_COLORS,
-    )
-    fig_bar.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="white", family="Outfit"),
-        height=360,
-        margin=dict(t=20, b=20, l=20, r=20),
-        legend=dict(font=dict(color="rgba(255,255,255,.8)")),
-        xaxis=dict(
-            gridcolor="rgba(255,255,255,.08)",
-            tickfont=dict(color="rgba(255,255,255,.8)"),
-        ),
-        yaxis=dict(
-            gridcolor="rgba(255,255,255,.08)",
-            tickfont=dict(color="rgba(255,255,255,.8)"),
-            range=[0, 20],
-        ),
-    )
-    st.plotly_chart(fig_bar, use_container_width=True)
-
-st.divider()
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  TABLEAU DÉTAILLÉ
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-st.markdown("### 📝 Résultats détaillés")
-
-filtre = st.multiselect(
-    "Filtrer par filière",
-    ["SM", "SE", "LT"],
-    default=["SM", "SE", "LT"],
-)
-filtered = results[results["Filière"].isin(filtre)].copy()
-
-fmt = {
-    c: "{:.2f}"
-    for c in filtered.columns
-    if c.startswith("Score") or c.startswith("Moy.") or c == "Confiance"
-}
-styled = (
-    filtered.style
-    .map(style_filiere, subset=["Filière"])
-    .format(fmt)
-)
-st.dataframe(styled, use_container_width=True, height=420)
-
-st.divider()
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  FICHE ÉLÈVE
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-st.markdown("### 🔍 Fiche élève")
-
-selected = st.selectbox("Choisir un élève", results["Élève"].tolist())
-
-if selected:
-    sd = results[results["Élève"] == selected].iloc[0]
-    trk = sd["Filière"]
-    col_t = TRACK_COLORS[trk]
-
-    d1, d2 = st.columns([1, 1])
-
-    # ── Colonne gauche : identité + scores barres ──
-    with d1:
-        st.markdown(
-            f"""
-<div class="metric-card" style="text-align:center;padding:2.2rem 1.4rem">
-  <h3 style="color:#fff;margin-bottom:.4rem">{selected}</h3>
-  <span class="track-badge" style="background:{col_t}22;color:{col_t};
-        border:2px solid {col_t};font-size:1.1rem;padding:8px 28px">
-    {trk} — {TRACK_NAMES[trk]}
-  </span>
-  <div style="color:rgba(255,255,255,.45);margin-top:1rem;font-size:.9rem">
-    Confiance : {sd['Confiance']:.2f} pts
-  </div>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("**Scores par filière :**")
-        max_sc = max(sd["Score SM"], sd["Score SE"], sd["Score LT"]) or 1
-        for t in ("SM", "SE", "LT"):
-            sc = sd[f"Score {t}"]
-            pct = sc / max_sc * 100
-            c = TRACK_COLORS[t]
-            st.markdown(
-                f"""
-<div style="margin:10px 0">
-  <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-    <span style="color:{c};font-weight:600">{t} — {TRACK_NAMES[t]}</span>
-    <span style="color:rgba(255,255,255,.65)">{sc:.2f}</span>
-  </div>
-  <div style="background:rgba(255,255,255,.08);border-radius:8px;height:10px">
-    <div style="background:{c};width:{pct:.1f}%;height:100%;border-radius:8px;
-         transition:width .5s ease"></div>
-  </div>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
-
-    # ── Colonne droite : radar ──
-    with d2:
-        idx_student = results[results["Élève"] == selected].index[0]
-        stu_avgs = averages.iloc[idx_student]
-        cats = list(stu_avgs.index)
-        vals = list(stu_avgs.values)
-
-        fig_radar = go.Figure()
-        fig_radar.add_trace(
-            go.Scatterpolar(
-                r=vals + [vals[0]],
-                theta=cats + [cats[0]],
-                fill="toself",
-                name=selected,
-                fillcolor=f"{col_t}33",
-                line=dict(color=col_t, width=2),
-            )
-        )
-        fig_radar.update_layout(
-            polar=dict(
-                radialaxis=dict(
-                    visible=True,
-                    range=[0, 20],
-                    gridcolor="rgba(255,255,255,.1)",
-                    tickfont=dict(color="rgba(255,255,255,.5)"),
-                ),
-                angularaxis=dict(
-                    gridcolor="rgba(255,255,255,.1)",
-                    tickfont=dict(color="rgba(255,255,255,.8)", size=13),
-                ),
-                bgcolor="rgba(0,0,0,0)",
-            ),
-            paper_bgcolor="rgba(0,0,0,0)",
-            showlegend=False,
-            height=380,
-            margin=dict(t=50, b=50, l=60, r=60),
-        )
-        st.plotly_chart(fig_radar, use_container_width=True)
-
-st.divider()
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  EXPORT
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-st.markdown("### 💾 Exporter")
-
-ex1, ex2 = st.columns(2)
-
-with ex1:
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as wr:
-        results.to_excel(wr, index=False, sheet_name="Résultats")
-    st.download_button(
-        "📥 Télécharger (Excel)",
-        data=buf.getvalue(),
-        file_name="resultats_orientation.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
-
-with ex2:
-    st.download_button(
-        "📥 Télécharger (CSV)",
-        data=results.to_csv(index=False).encode("utf-8"),
-        file_name="resultats_orientation.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-    
