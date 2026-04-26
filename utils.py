@@ -205,7 +205,7 @@ def read_massar_format(uploaded_file):
         col_names = ["ID", "Num_Massar", "Eleve"] + [f"Devoir_{i+1}" for i in range(len(note_cols))]
         df.columns = col_names
 
-        for col in col_names[2:]:
+        for col in col_names[3:]:  # Skip ID, Num_Massar, Eleve — convertir seulement les Devoirs
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
         df = df.dropna(how="all")
