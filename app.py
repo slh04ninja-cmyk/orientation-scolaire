@@ -190,7 +190,7 @@ def generate_pdf_report(results_df, matieres_list, classe):
 
     # ── Stats finales ──
     story.append(Spacer(1, 6*mm))
-    stats = f"Total : {total_students} eleves | Score moyen : {results_df['Score'].mean():.1f}/100"
+    stats = f"Total : {total_students} eleves"
     story.append(Paragraph(stats, heading_style))
 
     # Seuils
@@ -334,7 +334,6 @@ with info_col2:
 with info_col3:
     nb_eleves = len(df_merged)
     st.markdown(f"- **Élèves :** {nb_eleves}")
-    # Score moyen sera ajouté après calcul
 
 st.divider()
 
@@ -350,10 +349,6 @@ scores = compute_student_score(averages, WEIGHTS)
 if scores.empty or len(averages) == 0:
     st.error("Aucune donnée élève trouvée. Vérifiez le format de vos fichiers.")
     st.stop()
-
-# Mise à jour de la colonne info_col3 avec le score moyen
-with info_col3:
-    st.markdown(f"- **Score moyen :** {scores.mean():.1f} / 100")
 
 results = classify_all(student_names, averages, scores, THRESHOLDS)
 
