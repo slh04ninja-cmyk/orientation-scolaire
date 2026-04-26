@@ -528,8 +528,8 @@ def process_multiple_files(uploaded_files):
                         massar_ids[nom] = str(num)
 
             continue          # format traité, passer au fichier suivant
-        except Exception:
-            pass              # ce n'est pas un MASSAR, on passe au fallback
+        except Exception as e:
+            st.warning(f"⚠️ Format MASSAR échoué pour {uploaded_file.name} : {e}")
 
         # ---- Fallback standard (sans retenter MASSAR) ----
         try:
@@ -571,7 +571,7 @@ def process_multiple_files(uploaded_files):
 
         except Exception as e:
             # On ignore le fichier problématique
-            st.warning(f"Impossible de traiter {uploaded_file.name} – {e}")
+            st.warning(f"⚠️ Impossible de traiter {uploaded_file.name} – {e}")
 
     # ----------------------------------------------------
     # Fusionner toutes les séries par matière

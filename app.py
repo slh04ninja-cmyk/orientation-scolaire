@@ -245,6 +245,14 @@ if not uploaded_files:
 # ─────────────────────────────────────────────
 try:
     df_merged, matieres_detectees, classe, devoirs_par_matiere, massar_ids = process_multiple_files(uploaded_files)
+    st.success(f"✅ {len(df_merged)} élèves chargés | Matières : {', '.join(matieres_detectees)} | Classe : {classe}")
+
+    # Debug: afficher les premières lignes
+    with st.expander("🔍 Données extraites (debug)"):
+        st.dataframe(df_merged.head(10))
+        st.write(f"Colonnes : {list(df_merged.columns)}")
+        st.write(f"massar_ids : {len(massar_ids)} entrées")
+        st.write(f"devoirs_par_matiere : {devoirs_par_matiere}")
 except Exception as exc:
     st.error("Impossible de lire/combiner les fichiers : " + str(exc))
     st.stop()
