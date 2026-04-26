@@ -425,9 +425,11 @@ def html_seuil_scale(s_sm, s_se, s_lt):
 
 def html_stat_card(count, color, subtitle, pct):
     s = '<div class="metric-card" style="border-left:4px solid ' + color + '">'
-    s += '<div style="color:' + color + ';font-size:2rem;font-weight:700">' + str(count) + '</div>'
-    s += '<div style="color:rgba(255,255,255,.7);font-size:.85rem">' + subtitle + '</div>'
-    s += '<div style="color:rgba(255,255,255,.35);font-size:.8rem">' + pct + '</div>'
+    s += '<div style="display:flex;align-items:baseline;gap:8px">'
+    s += '<span style="color:' + color + ';font-size:2rem;font-weight:700">' + str(count) + '</span>'
+    s += '<span style="color:rgba(255,255,255,.7);font-size:.85rem">' + subtitle + '</span>'
+    s += '</div>'
+    s += '<div style="color:rgba(255,255,255,.35);font-size:.8rem;margin-top:4px">' + pct + '</div>'
     s += '</div>'
     return s
 
