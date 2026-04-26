@@ -211,7 +211,14 @@ def read_massar_format(uploaded_file):
         df = df.dropna(how="all")
         df = df[df["Eleve"].notna()].copy()
         if len(df) == 0:
-            raise ValueError("Aucune donnée élève extraite du fichier MASSAR")
+            # Debug: montrer ce qu'on essaie d'extraire
+            sample = df_raw.iloc[17:22, cols_to_keep].to_dict('records')
+            raise ValueError(
+                f"Aucune donnée élève extraite. "
+                f"Codes trouvés: {len(note_cols)} devoirs aux colonnes {note_cols}. "
+                f"Colonnes extraites: {cols_to_keep}. "
+                f"Échantillon lignes 17-21: {sample}"
+            )
         return df
     except Exception as e:
         raise e
