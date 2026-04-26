@@ -209,15 +209,19 @@ def read_massar_format(uploaded_file):
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
         df = df.dropna(how="all")
-        df = df[df["Eleve"].notna()].copy()
+        # Convertir Eleve en string et garder les lignes non vides
+        df["Eleve"] = df["Eleve"].astype(str).str.strip()
+        df = df[df["Eleve"].notna() & (df["Eleve"] != "") & (df["Eleve"] != "nan")].copy()
         if len(df) == 0:
             # Debug: montrer ce qu'on essaie d'extraire
             sample = df_raw.iloc[17:22, cols_to_keep].to_dict('records')
+            eleve_vals = df_raw.iloc[17:22, 3].tolist()
             raise ValueError(
                 f"Aucune donnée élève extraite. "
                 f"Codes trouvés: {len(note_cols)} devoirs aux colonnes {note_cols}. "
                 f"Colonnes extraites: {cols_to_keep}. "
-                f"Échantillon lignes 17-21: {sample}"
+                f"Valeurs col 3 (Eleve): {eleve_vals}. "
+                f"Échantillon: {sample}"
             )
         return df
     except Exception as e:
