@@ -58,7 +58,7 @@ st.set_page_config(
     page_title="Orientation Scolaire",
     page_icon="\U0001F393",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 
 st.markdown("<style>" + get_css() + "</style>", unsafe_allow_html=True)
