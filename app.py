@@ -112,10 +112,11 @@ def generate_pdf_report(results_df, matieres_list, classe):
     story.append(Paragraph(f"Classe : {classe} | Matieres : {matieres_text}", heading_style))
     story.append(Spacer(1, 4*mm))
 
-    # ── Colonnes : N° | Élève (arabe) | Score | Éligibilité ──
-    col_widths = [12*mm, 70*mm, 22*mm, 60*mm]
+    # ── Colonnes : N° | N° Massar | Élève (arabe) | Score | Éligibilité ──
+    col_widths = [10*mm, 28*mm, 55*mm, 18*mm, 55*mm]
     header_row = [
         Paragraph("<b>N°</b>", cell_center),
+        Paragraph("<b>N° Massar</b>", cell_center),
         Paragraph("<b>Eleve</b>", cell_center),
         Paragraph("<b>Score</b>", cell_center),
         Paragraph("<b>Eligibilite</b>", cell_center),
@@ -128,11 +129,13 @@ def generate_pdf_report(results_df, matieres_list, classe):
     for i, (_, row) in enumerate(results_df.iterrows()):
         nom_arabe = str(row.get("Eleve", ""))
         nom_display = reshape_arabic(nom_arabe)
+        num_massar = str(row.get("Num_Massar", ""))
         score_val = f"{row.get('Score', 0):.1f}"
         elig_val = str(row.get("Eligibilite", ""))
 
         data_row = [
             Paragraph(str(i + 1), cell_center),
+            Paragraph(num_massar, cell_center),
             Paragraph(nom_display, cell_arabic),
             Paragraph(score_val, cell_center),
             Paragraph(elig_val, cell_center),
@@ -159,9 +162,10 @@ def generate_pdf_report(results_df, matieres_list, classe):
             ('FONTNAME', (0, 1), (-1, -1), 'DejaVu'),
             ('FONTSIZE', (0, 1), (-1, -1), 8),
             ('ALIGN', (0, 0), (0, -1), 'CENTER'),   # N°
-            ('ALIGN', (2, 0), (2, -1), 'CENTER'),    # Score
-            ('ALIGN', (3, 0), (3, -1), 'CENTER'),    # Eligibilité
-            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),     # Nom arabe (RTL)
+            ('ALIGN', (1, 0), (1, -1), 'CENTER'),    # N° Massar
+            ('ALIGN', (3, 0), (3, -1), 'CENTER'),    # Score
+            ('ALIGN', (4, 0), (4, -1), 'CENTER'),    # Eligibilité
+            ('ALIGN', (2, 0), (2, -1), 'RIGHT'),     # Nom arabe (RTL)
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             # Grille
             ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#cccccc")),
@@ -240,7 +244,7 @@ if not uploaded_files:
 # TRAITEMENT DES FICHIERS
 # ─────────────────────────────────────────────
 try:
-    df_merged, matieres_detectees, classe, devoirs_par_matiere = process_multiple_files(uploaded_files)
+    df_merged, matieres_detectees, classe, devoirs_par_matiere, massar_ids = process_multiple_files(uploaded_files)
 except Exception as exc:
     st.error("Impossible de lire/combiner les fichiers : " + str(exc))
     st.stop()
@@ -340,6 +344,9 @@ with info_col3:
     st.markdown(f"- **Score moyen :** {scores.mean():.1f} / 100")
 
 results = classify_all(student_names, averages, scores, THRESHOLDS)
+
+# Ajouter le numéro MASSAR aux résultats
+results["Num_Massar"] = results["Eleve"].map(massar_ids).fillna("")
 
 # ─────────────────────────────────────────────
 #  STATISTIQUES

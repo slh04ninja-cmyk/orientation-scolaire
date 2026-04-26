@@ -200,9 +200,9 @@ def read_massar_format(uploaded_file):
         if len(note_cols) < 3:
             raise ValueError(f"Format MASSAR invalide : {len(note_cols)} devoirs trouvés")
 
-        cols_to_keep = [1, 3] + note_cols
+        cols_to_keep = [1, 2, 3] + note_cols
         df = df_raw.iloc[17:, cols_to_keep].copy()
-        col_names = ["ID", "Eleve"] + [f"Devoir_{i+1}" for i in range(len(note_cols))]
+        col_names = ["ID", "Num_Massar", "Eleve"] + [f"Devoir_{i+1}" for i in range(len(note_cols))]
         df.columns = col_names
 
         for col in col_names[2:]:
@@ -477,7 +477,11 @@ def get_moyennes_from_massar_df(df):
     devoir_cols = [c for c in df.columns if c.startswith("Devoir_")]
     if not devoir_cols:
         return pd.Series(dtype=float)
-    return df.set_index("Eleve")[devoir_cols].mean(axis=1).round(2)
+    # Garder aussi Num_Massar s'il existe
+    cols_index = ["Eleve"]
+    if "Num_Massar" in df.columns:
+        return df.set_index("Eleve")[devoir_cols].mean(axis=1).round(2), df.set_index("Eleve")["Num_Massar"].first()
+    return df.set_index("Eleve")[devoir_cols].mean(axis=1).round(2), None
 
 
 def process_multiple_files(uploaded_files):
@@ -487,9 +491,11 @@ def process_multiple_files(uploaded_files):
     - matieres_detectees : liste des noms de matière (français)
     - classe : chaîne représentant la classe (ou 'Inconnue')
     - devoirs_par_matiere : dict {matiere: nb total de devoirs}
+    - massar_ids : dict {nom_eleve: num_massar}
     """
     matiere_series = {}          # matière -> liste de Series (index = nom élève)
     devoirs_counts = {}          # matière -> nombre cumulé de devoirs
+    massar_ids = {}              # nom_eleve -> numéro MASSAR
     classe = "Inconnue"
 
     for uploaded_file in uploaded_files:
@@ -503,11 +509,20 @@ def process_multiple_files(uploaded_files):
             if classe == "Inconnue" and metadata["groupe"] != "Groupe inconnu":
                 classe = metadata["groupe"]
 
-            series_moy = get_moyennes_from_massar_df(df_massar)
+            result = get_moyennes_from_massar_df(df_massar)
+            series_moy = result[0]
+            num_massar_series = result[1]
             nb_devoirs = len([c for c in df_massar.columns if c.startswith("Devoir_")])
 
             matiere_series.setdefault(matiere, []).append(series_moy)
             devoirs_counts[matiere] = devoirs_counts.get(matiere, 0) + nb_devoirs
+
+            # Collecter les numéros MASSAR
+            if num_massar_series is not None:
+                for nom, num in num_massar_series.items():
+                    if pd.notna(num) and nom not in massar_ids:
+                        massar_ids[nom] = str(num)
+
             continue          # format traité, passer au fichier suivant
         except Exception:
             pass              # ce n'est pas un MASSAR, on passe au fallback
@@ -573,4 +588,4 @@ def process_multiple_files(uploaded_files):
     merged_df.fillna(0, inplace=True)
 
     matieres_detectees = list(merged_data.keys())
-    return merged_df, matieres_detectees, classe, devoirs_counts
+    return merged_df, matieres_detectees, classe, devoirs_counts, massar_ids
