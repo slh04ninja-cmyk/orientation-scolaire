@@ -495,7 +495,7 @@ def get_moyennes_from_massar_df(df):
     # Garder aussi Num_Massar s'il existe
     cols_index = ["Eleve"]
     if "Num_Massar" in df.columns:
-        return df.set_index("Eleve")[devoir_cols].mean(axis=1).round(2), df.set_index("Eleve")["Num_Massar"].first()
+        return df.set_index("Eleve")[devoir_cols].mean(axis=1).round(2), df.set_index("Eleve")["Num_Massar"]
     return df.set_index("Eleve")[devoir_cols].mean(axis=1).round(2), None
 
 
@@ -535,7 +535,7 @@ def process_multiple_files(uploaded_files):
             # Collecter les numéros MASSAR
             if num_massar_series is not None:
                 for nom, num in num_massar_series.items():
-                    if pd.notna(num) and nom not in massar_ids:
+                    if pd.notna(num) and str(num).strip() != "" and nom not in massar_ids:
                         massar_ids[nom] = str(num)
 
             continue          # format traité, passer au fichier suivant
