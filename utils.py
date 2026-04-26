@@ -1,8 +1,21 @@
+import os
 from io import StringIO
-
 import pandas as pd
 import numpy as np
+import streamlit as st
 
+# ------------------------------
+# Mapping arabe → français (matières MASSAR)
+# ------------------------------
+ARABIC_TO_FR = {
+    "الرياضيات": "Mathematiques",
+    "علوم الحياة والأرض": "SVT",
+    "الفيزياء والكيمياء": "Physique",
+    "الفرنسية": "Francais",
+    "اللغة العربية": "Arabe",
+    "الفلسفة": "Philosophie",
+    "التربية الإسلامية": "Islam",
+}
 
 SUBJECT_PATTERNS = {
     "Mathematiques": ["mathematiques", "maths", "math", "mathe"],
@@ -19,7 +32,6 @@ TRACK_NAMES = {
 }
 TRACK_COLORS = {"SM": "#7c6cf0", "SE": "#22c997", "LT": "#f06292"}
 
-# Poids par défaut — un seul jeu commun à toutes les filières
 DEFAULT_WEIGHTS = {
     "Mathematiques": 3.0,
     "Physique": 3.0,
@@ -27,7 +39,6 @@ DEFAULT_WEIGHTS = {
     "Francais": 2.0,
 }
 
-# Seuils par défaut — saisis librement par l'utilisateur
 DEFAULT_THRESHOLDS = {"SM": 70, "SE": 50, "LT": 30}
 
 
@@ -117,122 +128,85 @@ hr { border-color: rgba(255, 255, 255, 0.06) !important; }
 
 
 def extract_massar_metadata(uploaded_file):
-    """
-    Extrait matière et classe directement du fichier MASSAR.
-    Positions MASSAR (Excel row numbers):
-    - Row 9, Col 4: Classe complète
-    - Row 9, Col 9: Groupe/Section
-    - Row 11, Col 15: Matière
-    """
     metadata = {
         "matiere": "Matière inconnue",
         "classe_complete": "Classe inconnue",
         "groupe": "Groupe inconnu"
     }
-    
     try:
-        # Lire le fichier Excel brut
         if hasattr(uploaded_file, 'seek'):
             uploaded_file.seek(0)
-        
         from openpyxl import load_workbook
         wb = load_workbook(uploaded_file)
         ws = wb.active
-        
-        # Row 9 (Excel row), Col 4, Col 9
+
         classe = ws.cell(row=9, column=4).value
         if pd.notna(classe) and isinstance(classe, str):
             metadata["classe_complete"] = classe.strip()
-        
+
         groupe = ws.cell(row=9, column=9).value
         if pd.notna(groupe) and isinstance(groupe, str):
             metadata["groupe"] = groupe.strip()
-        
-        # Row 11, Col 15
+
         matiere = ws.cell(row=11, column=15).value
         if pd.notna(matiere) and isinstance(matiere, str):
             metadata["matiere"] = matiere.strip()
-    
-    except Exception as e:
-        pass  # Garder les valeurs par défaut
-    
+    except Exception:
+        pass
     return metadata
 
 
 def read_massar_format(uploaded_file):
-    """
-    Lit le format MASSAR Marocain.
-    Extrait UNIQUEMENT les colonnes de devoirs (#1#, #2#, #3#)
-    en EXCLUANT les activités (#4#, #100#).
-    """
     try:
-        # Gérer le seek pour Streamlit
         if hasattr(uploaded_file, 'seek'):
             uploaded_file.seek(0)
-        
         df_raw = pd.read_excel(uploaded_file, header=None, engine="openpyxl")
-        
-        # Vérifier que c'est bien un format MASSAR
         if len(df_raw) < 17:
             raise ValueError("Fichier trop court pour format MASSAR")
-        
-        # Trouver les codes (row 14)
+
         codes_row = df_raw.iloc[14].tolist() if len(df_raw) > 14 else []
         subheaders_row = df_raw.iloc[16].tolist() if len(df_raw) > 16 else []
-        
-        # Identifier les colonnes de devoirs (#1#, #2#, #3# uniquement)
+
         note_cols = []
         for i in range(len(codes_row)):
             try:
                 code = codes_row[i]
                 if pd.notna(code) and isinstance(code, str) and '#' in code:
                     if code in ['#1#', '#2#', '#3#']:
-                        # Vérifier que c'est une colonne النقطة (note)
                         if i < len(subheaders_row):
                             subh = subheaders_row[i]
                             if pd.notna(subh) and subh == 'النقطة':
                                 note_cols.append(i)
             except (IndexError, TypeError):
                 continue
-        
+
         if len(note_cols) < 3:
-            raise ValueError(f"Format MASSAR invalide : {len(note_cols)} devoirs trouvés au lieu de 3")
-        
-        # Construire le dataframe avec les bonnes colonnes
+            raise ValueError(f"Format MASSAR invalide : {len(note_cols)} devoirs trouvés")
+
         cols_to_keep = [1, 3] + note_cols
         df = df_raw.iloc[17:, cols_to_keep].copy()
-        
-        # Assigner les noms de colonnes
         col_names = ["ID", "Eleve"] + [f"Devoir_{i+1}" for i in range(len(note_cols))]
         df.columns = col_names
-        
-        # Convertir les notes en numérique
+
         for col in col_names[2:]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-        
-        # Nettoyer
+
         df = df.dropna(how="all")
         df = df[df["Eleve"].notna()].copy()
-        
         if len(df) == 0:
             raise ValueError("Aucune donnée élève extraite du fichier MASSAR")
-        
         return df
-    
     except Exception as e:
         raise e
 
 
-def read_excel_safe(uploaded_file):
-    """Essaie d'abord le format MASSAR, sinon fallback sur lecture standard."""
-    # Tenter format MASSAR d'abord
-    try:
-        return read_massar_format(uploaded_file)
-    except Exception as massar_err:
-        # Format MASSAR échoué, essayer les formats standards
-        pass
-    
-    # Fallback : lecture standard
+def read_excel_safe(uploaded_file, try_massar=True):
+    if try_massar:
+        try:
+            return read_massar_format(uploaded_file)
+        except Exception:
+            pass
+
     errors = []
     for engine in ("openpyxl", "xlrd", "calamine"):
         try:
@@ -240,7 +214,7 @@ def read_excel_safe(uploaded_file):
             return pd.read_excel(uploaded_file, engine=engine)
         except Exception as e:
             errors.append(f"{engine}: {str(e)}")
-    
+
     for sep in ("\t", ";", ","):
         try:
             uploaded_file.seek(0)
@@ -250,7 +224,7 @@ def read_excel_safe(uploaded_file):
                 return df
         except Exception as e:
             errors.append(f"csv ({sep}): {str(e)}")
-    
+
     try:
         uploaded_file.seek(0)
         raw = uploaded_file.read().decode("utf-8", errors="replace")
@@ -259,7 +233,7 @@ def read_excel_safe(uploaded_file):
             return df
     except Exception as e:
         errors.append(f"csv_auto: {str(e)}")
-    
+
     raise RuntimeError("Lecture impossible.\n" + "\n".join(errors))
 
 
@@ -270,19 +244,10 @@ def clean_dataframe(df):
 
 
 def detect_subject_columns(df):
-    """
-    Détecte les colonnes de matières.
-    - Format MASSAR : cherche les colonnes 'Devoir_X'
-    - Format standard : cherche les patterns (Mathematiques, Physique, SVT, Francais)
-    """
-    # Vérifier si c'est du format MASSAR
     devoir_cols = [col for col in df.columns if isinstance(col, str) and col.startswith("Devoir_")]
     if devoir_cols:
-        # Format MASSAR — tous les devoirs sous une seule matière
-        mapping = {"Matiere": devoir_cols}
-        return mapping
-    
-    # Format standard : pattern matching
+        return {"Matiere": devoir_cols}
+
     mapping = {}
     for col in df.columns:
         if not isinstance(col, str):
@@ -292,7 +257,6 @@ def detect_subject_columns(df):
             if any(kw in low for kw in keywords):
                 mapping.setdefault(subject, []).append(col)
                 break
-    
     return mapping
 
 
@@ -312,16 +276,8 @@ def detect_student_columns(df):
 
 
 def build_student_name(df):
-    """
-    Extrait les noms d'élèves.
-    Pour format MASSAR : utilise directement la colonne "Eleve".
-    Pour format standard : combine Nom + Prenom.
-    """
-    # Vérifier si c'est du format MASSAR
     if "Eleve" in df.columns:
         return df["Eleve"].astype(str)
-    
-    # Format standard
     nom, prenom, complet = detect_student_columns(df)
     if complet:
         return df[complet].astype(str)
@@ -333,72 +289,38 @@ def build_student_name(df):
 
 
 def compute_averages(df, subject_cols):
-    """
-    Calcule les moyennes par matière.
-    subject_cols : dict {matière: [liste de colonnes]}
-    """
     avgs = pd.DataFrame(index=df.index)
-    
     if not isinstance(subject_cols, dict):
         raise TypeError(f"subject_cols doit être un dictionnaire, reçu: {type(subject_cols)}")
-    
     for subject, cols in subject_cols.items():
-        # Vérifier que cols est bien une liste
         if not isinstance(cols, (list, tuple)):
-            raise TypeError(f"Pour matière '{subject}', colonnes doivent être une liste, reçu: {type(cols)}")
-        
-        # Filtrer les colonnes présentes dans le dataframe
+            raise TypeError(f"Pour matière '{subject}', colonnes liste attendue, reçu: {type(cols)}")
         cols_present = [c for c in cols if c in df.columns]
-        
         if not cols_present:
             continue
-        
-        # Convertir en numérique
         for c in cols_present:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-        
-        # Calculer la moyenne
         avgs[subject] = df[cols_present].mean(axis=1).round(2)
-    
     return avgs.fillna(0)
 
 
 def compute_student_score(averages, weights):
-    """
-    Calcule UN SEUL score /100 par élève.
-    
-    Format MASSAR : colonne "Matiere" unique = moyenne des devoirs
-    Format standard : colonnes = matières avec poids individuels
-    
-    Formule standard : Score = (somme(poids_i * moy_i) / somme(poids)) * 5
-    Formule MASSAR : Score = Matiere * 5 (conversion /20 → /100)
-    """
-    # Cas spécial : format MASSAR avec colonne "Matiere"
     if "Matiere" in averages.columns and len(averages.columns) == 1:
-        # La moyenne est déjà calculée, convertir de /20 à /100
-        score = (averages["Matiere"] * 5).round(2)
-        return score
-    
-    # Format standard : utiliser les poids
+        return (averages["Matiere"] * 5).round(2)
+
     total_weight = sum(weights.get(s, 0) for s in averages.columns if s in weights)
     if total_weight == 0:
         return pd.Series(0.0, index=averages.index)
-    
+
     score = pd.Series(0.0, index=averages.index)
     for subject in averages.columns:
         w = weights.get(subject, 0)
         if w > 0:
             score += w * averages[subject]
-    
     return ((score / total_weight) * 5).round(2)
 
 
 def classify_all(student_names, averages, scores, thresholds):
-    """
-    scores    : pd.Series — score unique /100 par élève
-    thresholds: dict {"SM": val, "SE": val, "LT": val}
-    Filière principale = seuil le plus élevé atteint (SM > SE > LT).
-    """
     rows = []
     for idx in range(len(averages)):
         score = scores.iloc[idx]
@@ -493,9 +415,6 @@ def html_student_card(name, score, primary, pname, pcol):
 
 
 def html_score_row(track, name, score, threshold, color, eligible):
-    """
-    Affiche le score unique de l'élève vs le seuil de chaque filière.
-    """
     cls = "eligible" if eligible else "not-eligible"
     icon = "✅" if eligible else "❌"
     pct = min(score, 100)
@@ -531,3 +450,110 @@ def help_text():
     lines.append("")
     lines.append("**Classement** : tries par score decroissant.")
     return "\n".join(lines)
+# ───── À coller juste après la fin de la Partie 1 ─────
+
+def get_moyennes_from_massar_df(df):
+    """
+    Calcule la moyenne des devoirs (colonnes Devoir_*) par élève.
+    Retourne une Series indexée par le nom de l'élève.
+    """
+    devoir_cols = [c for c in df.columns if c.startswith("Devoir_")]
+    if not devoir_cols:
+        return pd.Series(dtype=float)
+    return df.set_index("Eleve")[devoir_cols].mean(axis=1).round(2)
+
+
+def process_multiple_files(uploaded_files):
+    """
+    Traite une liste de fichiers (MASSAR ou standard) et retourne :
+    - merged_df : DataFrame avec colonne 'Eleve' + une colonne de moyenne par matière
+    - matieres_detectees : liste des noms de matière (français)
+    - classe : chaîne représentant la classe (ou 'Inconnue')
+    - devoirs_par_matiere : dict {matiere: nb total de devoirs}
+    """
+    matiere_series = {}          # matière -> liste de Series (index = nom élève)
+    devoirs_counts = {}          # matière -> nombre cumulé de devoirs
+    classe = "Inconnue"
+
+    for uploaded_file in uploaded_files:
+        # ---- Essayer le format MASSAR ----
+        try:
+            df_massar = read_massar_format(uploaded_file)
+            # Métadonnées
+            metadata = extract_massar_metadata(uploaded_file)
+            matiere_raw = metadata["matiere"]
+            matiere = ARABIC_TO_FR.get(matiere_raw, matiere_raw)
+            if classe == "Inconnue" and metadata["groupe"] != "Groupe inconnu":
+                classe = metadata["groupe"]
+
+            series_moy = get_moyennes_from_massar_df(df_massar)
+            nb_devoirs = len([c for c in df_massar.columns if c.startswith("Devoir_")])
+
+            matiere_series.setdefault(matiere, []).append(series_moy)
+            devoirs_counts[matiere] = devoirs_counts.get(matiere, 0) + nb_devoirs
+            continue          # format traité, passer au fichier suivant
+        except Exception:
+            pass              # ce n'est pas un MASSAR, on passe au fallback
+
+        # ---- Fallback standard (sans retenter MASSAR) ----
+        try:
+            df = read_excel_safe(uploaded_file, try_massar=False)  # <-- modification ici
+            df = clean_dataframe(df)
+            subject_cols = detect_subject_columns(df)
+
+            # Choix de la matière :
+            if subject_cols:
+                # Prendre la première matière trouvée
+                matiere = list(subject_cols.keys())[0]
+            else:
+                # Utiliser le nom du fichier (sans extension) comme matière
+                matiere = os.path.splitext(uploaded_file.name)[0]
+
+            # Créer une colonne 'Eleve' pour l'indexation
+            student_names = build_student_name(df)
+            df_temp = df.copy()
+            df_temp["Eleve"] = student_names
+
+            # Colonnes de cette matière (ou toutes les colonnes numériques si aucune détectée)
+            if matiere in subject_cols:
+                cols_present = [c for c in subject_cols[matiere] if c in df_temp.columns]
+            else:
+                cols_present = df_temp.select_dtypes(include=np.number).columns.tolist()
+
+            if cols_present:
+                # Moyenne de l'élève sur ces colonnes
+                series_moy = df_temp.set_index("Eleve")[cols_present].mean(axis=1).round(2)
+            else:
+                series_moy = pd.Series(dtype=float)
+
+            matiere_series.setdefault(matiere, []).append(series_moy)
+            devoirs_counts[matiere] = devoirs_counts.get(matiere, 0) + len(cols_present)
+
+            # Récupération de la classe (optionnelle, pas toujours présente)
+            if classe == "Inconnue" and "Classe" in df_temp.columns:
+                classe = str(df_temp["Classe"].iloc[0]) if len(df_temp) > 0 else "Inconnue"
+
+        except Exception as e:
+            # On ignore le fichier problématique
+            st.warning(f"Impossible de traiter {uploaded_file.name} – {e}")
+
+    # ----------------------------------------------------
+    # Fusionner toutes les séries par matière
+    # ----------------------------------------------------
+    if not matiere_series:
+        raise ValueError("Aucune donnée élève exploitable dans les fichiers fournis.")
+
+    merged_data = {}
+    for matiere, series_list in matiere_series.items():
+        # Concaténer toutes les séries de cette matière (si plusieurs fichiers)
+        all_series = pd.concat(series_list, axis=1)
+        # Moyenne si plusieurs fichiers pour la même matière
+        merged_data[matiere] = all_series.mean(axis=1).round(2)
+
+    merged_df = pd.DataFrame(merged_data)
+    merged_df.index.name = "Eleve"
+    merged_df.reset_index(inplace=True)
+    merged_df.fillna(0, inplace=True)
+
+    matieres_detectees = list(merged_data.keys())
+    return merged_df, matieres_detectees, classe, devoirs_counts
