@@ -427,7 +427,8 @@ def _style_eligibilite(val):
     return "color:#888;font-weight:600"
 
 styled = filtered.style.map(_style_eligibilite, subset=["Eligibilite"]).format(fmt)
-st.dataframe(styled, use_container_width=True)
+table_height = min(1500, 40 + len(filtered) * 38)
+st.dataframe(styled, use_container_width=True, height=table_height)
 
 st.divider()
 
