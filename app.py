@@ -339,6 +339,10 @@ averages = df_merged.drop(columns=["Eleve"]).set_index(df_merged["Eleve"])
 
 scores = compute_student_score(averages, WEIGHTS)
 
+if scores.empty or len(averages) == 0:
+    st.error("Aucune donnée élève trouvée. Vérifiez le format de vos fichiers.")
+    st.stop()
+
 # Mise à jour de la colonne info_col3 avec le score moyen
 with info_col3:
     st.markdown(f"- **Score moyen :** {scores.mean():.1f} / 100")

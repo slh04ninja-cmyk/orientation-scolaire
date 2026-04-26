@@ -322,6 +322,8 @@ def compute_averages(df, subject_cols):
 
 
 def compute_student_score(averages, weights):
+    if averages.empty:
+        return pd.Series(dtype=float)
     if "Matiere" in averages.columns and len(averages.columns) == 1:
         return (averages["Matiere"] * 5).round(2)
 
@@ -360,6 +362,8 @@ def classify_all(student_names, averages, scores, thresholds):
         rows.append(row)
 
     result = pd.DataFrame(rows)
+    if result.empty:
+        return result
     result = result.sort_values("Score", ascending=False).reset_index(drop=True)
     result.index = result.index + 1
     result.index.name = "Rang"
